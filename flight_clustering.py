@@ -1,5 +1,7 @@
 # Author: slience_me
 # Date: 2024/9/29 20:10
+import os.path
+
 import numpy as np
 import pandas as pd
 import time
@@ -9,7 +11,7 @@ from sklearn.metrics import silhouette_score, davies_bouldin_score, adjusted_ran
 
 # 计算聚类度量
 def calculate_metrics(true_labels, predicted_labels, dataset):
-    print("Calculating clustering metrics (approx. 41 mins)...")
+    print("Calculating clustering metrics (approx. 16 mins)...")
 
     # 内部评估指标
     internal_silhouette = silhouette_score(dataset, predicted_labels)
@@ -43,7 +45,7 @@ def load_dataset(filepath):
 
 
 # 数据预处理
-def preprocess_data(df, feature_cols, flight_id_col):
+def preprocess_data_min(df, feature_cols, flight_id_col):
     grouped = df.groupby(flight_id_col)
     min_len = grouped.size().min()  # 获取最小分组长度
 
@@ -55,13 +57,39 @@ def preprocess_data(df, feature_cols, flight_id_col):
     return aligned_groups
 
 
+def preprocess_data(df, feature_cols, flight_id_col):
+    grouped = df.groupby(flight_id_col)
+    max_len = grouped.size().max()  # 获取最大分组长度
+
+    # 对齐和零填充分组数据
+    aligned_groups = {}
+    for flight_id, group in grouped:
+        group_values = group[feature_cols].values
+        # 检查是否需要逆序
+        if group_values[-1, 2] < group_values[0, 2]:
+            group_values = group_values[::-1]
+
+        # 如果分组长度不足，进行0填充
+        padded_group = np.zeros((max_len, group_values.shape[1]))
+        padded_group[:group_values.shape[0], :] = group_values  # 填充原始数据
+
+        aligned_groups[flight_id] = padded_group
+
+    return aligned_groups, grouped
+
+
 # 计算距离矩阵
 def calculate_distance_matrix(aligned_groups):
+    if os.path.exists('data/distance_df.csv'):
+        distance_matrix = pd.read_csv('data/distance_df.csv').iloc[:, 1:].to_numpy()
+        return distance_matrix
+
     flight_ids = list(aligned_groups.keys())
     num_flights = len(flight_ids)
     distance_matrix = np.zeros((num_flights, num_flights))
 
     for i, flight_id1 in enumerate(flight_ids):
+        print(f"Calculating distances for flight {flight_id1} ({i + 1}/{num_flights})")
         group1 = aligned_groups[flight_id1]
         for j, flight_id2 in enumerate(flight_ids):
             if i != j:
@@ -69,7 +97,9 @@ def calculate_distance_matrix(aligned_groups):
                 distance_matrix[i, j] = np.mean(np.linalg.norm(group1 - group2, axis=1))
 
     print("Distance matrix calculation finished.")
-    return pd.DataFrame(distance_matrix, index=flight_ids, columns=flight_ids)
+    result = pd.DataFrame(distance_matrix, index=flight_ids, columns=flight_ids)
+    result.to_csv('data/distance_df.csv', index=True)
+    return result
 
 
 # 提取特征和标签
@@ -97,14 +127,14 @@ def cluster(df, distance_matrix_path='data/distance_df.csv'):
     print('Begin clustering process.')
 
     # 特征与标签提取
-    dataset, labels, flight_ids = extract_features_and_labels(df)
+    #dataset, labels, flight_ids = extract_features_and_labels(df)
     print('Feature and label extraction complete.')
 
     # 读取距离矩阵
     print('Reading precomputed distance matrix...')
-    distance_matrix = pd.read_csv(distance_matrix_path).iloc[:, 1:].to_numpy()
-    # aligned_groups = preprocess_data(df, ['x', 'y', 'z'], 'flight_id')
-    # distance_matrix = calculate_distance_matrix(aligned_groups)
+    # distance_matrix = pd.read_csv(distance_matrix_path).iloc[:, 1:].to_numpy()
+    aligned_groups, grouped = preprocess_data(df, ['x', 'y', 'z'], 'flight_id')
+    distance_matrix = calculate_distance_matrix(aligned_groups)
     print('Distance matrix loaded.')
 
     # 执行聚类
@@ -112,12 +142,22 @@ def cluster(df, distance_matrix_path='data/distance_df.csv'):
     print('DBSCAN clustering finished.')
 
     # 扩展聚类标签到每个航班
-    predicted_labels_expanded = np.repeat(predicted_labels, df.groupby('flight_id').size().values)
-    print('Labels unified across flight groups.')
+    #predicted_labels_expanded = np.repeat(predicted_labels, df.groupby('flight_id').size().values)
+    #print('Labels unified across flight groups.')
 
     # 计算并打印聚类的评估指标
     print('Calculating clustering metrics...')
-    calculate_clustering_metrics(labels, predicted_labels_expanded, dataset)
+    # calculate_clustering_metrics(labels, predicted_labels_expanded, dataset)
+    flight_ids = list(aligned_groups.keys())
+    all_grouped_label = [group['label'].values[0] for _, group in grouped]
+    all_grouped_values = [aligned_groups[id] for id in flight_ids]
+
+
+    # 方案1
+    # data = np.array([data.mean(axis=0) for data in all_grouped_values])
+    # 方案2
+    data = np.array([value.flatten() for value in all_grouped_values])
+    calculate_clustering_metrics(all_grouped_label, predicted_labels, data)
     print('Clustering process completed.')
 
     # 输出聚类结果
